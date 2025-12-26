@@ -317,21 +317,11 @@ The output `transformation_matrix.json` can be loaded in:
 
 *(Not currently implemented)*
 
-- 🔮 FPFH feature matching for automatic pre-alignment fallback
-- 🤖 AI-based automatic landmark detection
-- 📊 Multi-resolution ICP with point-to-plane metric
-- 🏥 Integration API for surgical navigation systems
-- 📈 Batch processing for multiple cases
-
----
-
-## License & Support
-
-**License:** MIT (or as specified by your institution)
-
-**Support:** For clinical use, ensure validation on your specific CT scanner models before deployment.
-
-**Citation:** If using this pipeline in research, please cite appropriately.
+-  FPFH feature matching for automatic pre-alignment fallback
+-  AI-based automatic landmark detection
+-  Multi-resolution ICP with point-to-plane metric
+-  Integration API for surgical navigation systems
+-  Batch processing for multiple cases
 
 ---
 
