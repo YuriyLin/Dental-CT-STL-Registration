@@ -4,266 +4,349 @@ A **stability-first, clinical-grade** registration system for aligning intraoral
 
 ---
 
-## 1. 系統概述 (System Overview)
+## Overview
 
-### 🎯 Purpose
-本系統專為 **牙科植牙/手術規劃** 設計，解決從口內掃描儀 (IOS) 獲取的 STL 模型與 CT 影像坐標對齊的問題。透過自動化的 DICOM 處理、智慧型閾值計算、以及多階段配準演算法，實現高精度的空間定位。
+This pipeline addresses critical challenges in dental imaging workflows:
 
-### 🏥 Clinical Applications
-| 應用場景 | 說明 |
-|----------|------|
-| **植牙導引板製作** | 將 STL 牙冠模型精確對齊至 CT 骨骼結構 |
-| **正顎手術規劃** | 融合術前 CT 與牙列數位模型 |
-| **齒顎矯正分析** | 結合齒槽骨與牙冠資訊進行 3D 診斷 |
-| **金屬假牙患者處理** | 專用金屬偽影抑制機制 |
+1. **Automated Surface Extraction**: Converts CT/CBCT DICOM volumes to watertight STL meshes
+2. **Metal Artifact Reduction (MAR)**: Specialized algorithms for dental implants and fillings
+3. **Precision Registration**: Aligns intraoral scan (IOS) STL data to CBCT coordinate systems
 
-### ✨ Key Innovations
-- **物理感知處理 (Physics-Aware Processing)**: 所有形態學運算與雜訊過濾均以 mm/mm³ 為單位，而非像素，確保跨解析度一致性。
-- **自適應金屬偽影補償 (Metal Artifact Compensation)**: 當偵測到 P99 > 3000 HU 時，自動提高閾值 +150 HU 以隔離緻密結構。
-- **三階段 ICP 精修 (Three-Stage ICP)**: 5.0mm → 1.5mm → 0.8mm 漸進式收斂，達成亞毫米級精度。
+### Clinical Applications
+
+- Surgical guide manufacturing
+- Implant planning verification
+- Digital orthodontic workflows
+- CAD/CAM prosthetic design
 
 ---
 
-## 2. 核心處理流程 (Pipeline Flow)
+## Key Features
 
-系統包含三個主要工具，可獨立或串聯使用：
+| Feature | Description |
+|---------|-------------|
+| **Adaptive HU Thresholding** | Otsu-based segmentation with P95 percentile hybrid logic |
+| **Metal Artifact Compensation** | Automatic detection (P99 > 3000 HU) with threshold adjustment |
+| **Morphological MAR** | Binary Opening operation to sever artifact connections |
+| **Mesh Cluster Filtering** | Removes disconnected fragments < 100 triangles |
+| **Three-Stage ICP** | Progressive refinement (5.0mm → 1.5mm → 0.8mm) |
+| **Memory Management** | Garbage collection for large batch processing |
+| **Batch Processing** | Recursive directory scanning with progress logging |
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         DENTAL CT-STL PIPELINE                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│   ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐   │
-│   │  DICOM Series   │────▶│   viewer.py     │────▶│   CT Surface    │   │
-│   │  (Raw CT Data)  │     │ (Preview/Export)│     │   (.stl)        │   │
-│   └─────────────────┘     └─────────────────┘     └─────────────────┘   │
-│                                  │                         │            │
-│                                  ▼                         ▼            │
-│   ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐   │
-│   │   STL Scan      │────▶│    main.py      │────▶│ Transformation  │   │
-│   │ (Intraoral)     │     │ (Registration)  │     │   Matrix        │   │
-│   └─────────────────┘     └─────────────────┘     └─────────────────┘   │
-│                                                                         │
-│   ┌─────────────────────────────────────────────────────────────────┐   │
-│   │              dicom_batch_to_ctl.py (Batch Processing)           │   │
-│   │  Recursive scan → CT modality filter → Auto threshold → STL    │   │
-│   └─────────────────────────────────────────────────────────────────┘   │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+---
 
-### 2.1 Registration Pipeline (`main.py`)
+## System Requirements
+
+### Minimum Configuration
+
+| Component | Requirement |
+|-----------|-------------|
+| OS | Windows 10/11, Ubuntu 20.04+, macOS 11+ |
+| Python | 3.9 or higher |
+| RAM | 16 GB (32 GB recommended for large volumes) |
+| Storage | SSD recommended for DICOM I/O performance |
+
+### Dependencies
 
 ```
-[Input]                    [Processing]                       [Output]
-   │                            │                                │
-   ▼                            ▼                                ▼
-DICOM + STL ──▶ Identity Check (Inlier Ratio > 0.85?) ──▶ Skip to ICP
-                      │ No
-                      ▼
-              Landmark Picking (Interactive)
-                      │
-                      ▼
-              SVD Initial Alignment (3+ points)
-                      │
-                      ▼
-              ┌───────────────────────────┐
-              │   Three-Stage ICP         │
-              │   ├─ Stage 1: 5.0mm/200i  │  (Expansion Adsorption)
-              │   ├─ Stage 2: 1.5mm/100i  │  (Transitional Refinement)
-              │   └─ Stage 3: 0.8mm/100i  │  (Precision Locking)
-              └───────────────────────────┘
-                      │
-                      ▼
-              Quality Report + Transform Matrix
-```
-
-### 2.2 CT Surface Extraction (`viewer.py` / `dicom_batch_to_ctl.py`)
-
-```
-[DICOM Input]
-      │
-      ▼
-┌─────────────────────────────────────────┐
-│  1. Adaptive HU Threshold Calculation   │
-│     • Otsu on bone range [300-2500]     │
-│     • Spacing Correction                │
-│     • Metal Artifact Detection (+150)   │
-│     • User Offset (+200)                │
-└─────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────┐
-│  2. Binary Segmentation                 │
-│     • Threshold: [calculated] ~ 3000 HU │
-└─────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────┐
-│  3. Morphological Cleanup               │
-│     • Opening (0.5mm radius)            │
-│     • Severs thin artifact connections  │
-└─────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────┐
-│  4. Connected Component Filtering       │
-│     • Remove fragments < 15 mm³         │
-└─────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────┐
-│  5. Anti-Alias Smoothing (Optional)     │
-│     • RMS linked to voxel spacing       │
-│     • Forced if spacing > 0.5mm         │
-└─────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────┐
-│  6. Marching Cubes Surface Extraction   │
-└─────────────────────────────────────────┘
-      │
-      ▼
-┌─────────────────────────────────────────┐
-│  7. Mesh Post-Processing                │
-│     • Remove duplicated vertices        │
-│     • Remove degenerate triangles       │
-│     • Cluster filter (< 100 triangles)  │
-└─────────────────────────────────────────┘
-      │
-      ▼
-[STL Output]
+open3d>=0.17.0
+SimpleITK>=2.2.0
+numpy>=1.21.0
+scikit-image>=0.19.0
 ```
 
 ---
 
-## 3. 模組架構設計 (Module Architecture)
+## Installation
 
-### 3.1 檔案結構 (File Structure)
+### Option 1: Virtual Environment (Recommended)
 
-```
-c:\Dental-CT-STL-Registration\
-│
-├── main.py                      # 主配準流程入口
-├── viewer.py                    # 互動式 CT/STL 檢視器
-├── dicom_batch_to_ctl.py        # 批量 DICOM → STL 轉換
-├── landmark_picker.py           # 獨立選點工具 (legacy)
-│
-├── src/                         # 核心模組
-│   ├── dicom_loader.py          # DICOM 載入與表面提取
-│   ├── stl_loader.py            # STL 載入與點雲處理
-│   ├── registration.py          # SVD 對齊 + ICP 精修
-│   ├── visualizer.py            # 視覺化輔助函式
-│   └── utils.py                 # 品質評估與 I/O 工具
-│
-├── data/                        # 原始資料
-│   └── CASE/cases/[case_name]/
-│       ├── DICOM/               # CT 切片
-│       └── mandible/            # 口掃 STL
-│
-├── landmarks/                   # 選點結果 (JSON)
-├── processed/                   # 配準輸出 (矩陣 + PLY)
-└── CT_CTL/                      # 批次轉換 STL 輸出
-```
-
-### 3.2 模組職責 (Module Responsibilities)
-
-| 模組 | 職責 | 核心函式 |
-|------|------|----------|
-| **`main.py`** | 配準主流程控制 | `InteractiveLandmarkPicker`, `main()` |
-| **`viewer.py`** | 互動檢視 + 單一轉換 | `calculate_adaptive_threshold()`, `extract_surface_from_ct()` |
-| **`dicom_batch_to_ctl.py`** | 批量轉換 + 錯誤處理 | `find_dicom_series()`, `batch_convert()` |
-| **`src/dicom_loader.py`** | DICOM I/O | `load_dicom_series()`, `extract_teeth_surface()` |
-| **`src/stl_loader.py`** | STL I/O + 點雲預處理 | `load_stl()`, `prepare_pointcloud_for_icp()` |
-| **`src/registration.py`** | 配準演算法 | `compute_rigid_transform_svd()`, `refine_with_icp()` |
-| **`src/utils.py`** | 品質指標計算 | `compute_rmse()`, `compute_inlier_ratio()` |
-
-### 3.3 資料流 (Data Flow)
-
-```
-                        ┌──────────────────────────────────────┐
-                        │           USER INTERFACE             │
-                        │  (CLI: main.py / viewer.py / batch)  │
-                        └──────────────────┬───────────────────┘
-                                           │
-              ┌────────────────────────────┼────────────────────────────┐
-              │                            │                            │
-              ▼                            ▼                            ▼
-    ┌─────────────────┐         ┌─────────────────┐         ┌─────────────────┐
-    │  dicom_loader   │         │   stl_loader    │         │  registration   │
-    │  ─────────────  │         │  ─────────────  │         │  ─────────────  │
-    │  DICOM → Mesh   │         │  STL → PointCld │         │  SVD + ICP      │
-    └────────┬────────┘         └────────┬────────┘         └────────┬────────┘
-             │                           │                           │
-             └───────────────────────────┴───────────────────────────┘
-                                         │
-                                         ▼
-                              ┌─────────────────────┐
-                              │       utils         │
-                              │  ─────────────────  │
-                              │  RMSE, I/O, Report  │
-                              └─────────────────────┘
-```
-
-### 3.4 關鍵演算法 (Key Algorithms)
-
-#### Adaptive HU Threshold
-```python
-threshold = Otsu(bone_range[300:2500])
-threshold += spacing_correction(-200 * (voxel_eff - 0.3))
-threshold += metal_offset(+150 if P99 > 3000)
-threshold += user_offset(+200)
-threshold = clip(threshold, 500, 3000)
-```
-
-#### Three-Stage ICP
-| Stage | Max Distance | Iterations | Purpose |
-|-------|--------------|------------|---------|
-| 1 | 5.0 mm | 200 | 擴張吸附 - 捕捉遠距對應點 |
-| 2 | 1.5 mm | 100 | 過渡微調 - 穩定對齊姿態 |
-| 3 | 0.8 mm | 100 | 精密鎖定 - 最終高精度收斂 |
-
----
-
-## 💻 Quick Start
-
-### Installation
 ```bash
-cd c:\Dental-CT-STL-Registration
+# Clone repository
+git clone https://github.com/your-org/dental-ct-stl-registration.git
+cd dental-ct-stl-registration
+
+# Create and activate virtual environment
 python -m venv venv
-venv\Scripts\activate
+
+# Windows
+.\venv\Scripts\activate
+
+# Linux/macOS
+source venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### Basic Usage
+### Option 2: Conda Environment
+
 ```bash
-# 1. 單一案例互動檢視
-python viewer.py --dicom-dir "data/CASE/cases/2023041801/DICOM" --hu-threshold auto
-
-# 2. 批量轉換
-python dicom_batch_to_ctl.py --input-dir "data/CT_problem" --output-dir "CT_CTL" --hu-threshold auto
-
-# 3. 完整配準流程
-python main.py --case 2023041801 --landmarks landmarks/2023041801.json --interactive --visualize
+conda create -n dental-reg python=3.10
+conda activate dental-reg
+pip install -r requirements.txt
 ```
 
 ---
 
-## 📝 Changelog
+## Quick Start
 
-### v1.2.0 (Current)
-- ✅ **Metal Artifact Reduction**: Changed threshold offset from -80 to +150, switched to Opening morphology.
-- ✅ **Mesh Post-Processing**: Added cluster filtering to remove small disconnected fragments.
-- ✅ **Batch Converter**: New `dicom_batch_to_ctl.py` with recursive scanning and memory management.
-- ✅ **Threshold Limit Fix**: Upper clip increased to 3000 HU for proper artifact handling.
-- ✅ **Empty Mesh Safety Check**: Prevents saving invalid STL files.
+### 1. Batch DICOM to STL Conversion
+
+```bash
+python dicom_batch_to_ctl.py \
+    --input-dir "./data/CT_cases" \
+    --output-dir "./CT_CTL" \
+    --hu-threshold auto
+```
+
+### 2. CT-STL Registration
+
+```bash
+python main.py \
+    --case 2023042401 \
+    --landmarks landmarks/2023042401.json \
+    --interactive \
+    --visualize
+```
+
+### 3. Point Cloud Visualization
+
+```bash
+python viewer.py \
+    --dicom-dir "./data/CASE/cases/2023042401/DICOM" \
+    --hu-threshold 1300 \
+    --output-stl true
+```
+
+---
+
+## Module Reference
+
+### DICOM Batch Converter
+
+**Script**: `dicom_batch_to_ctl.py`
+
+Recursively scans directories for CT DICOM series and converts to STL format with automated preprocessing.
+
+#### Arguments
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--input-dir` | `str` | *required* | Root directory containing DICOM data |
+| `--output-dir` | `str` | *required* | Destination for generated STL files |
+| `--hu-threshold` | `str\|int` | `auto` | Segmentation threshold (`auto` or integer) |
+| `--no-smooth` | `flag` | `False` | Disable anti-aliasing smoothing |
+
+#### Output Naming Convention
+
+```
+{CaseID}_HU{threshold}.stl
+```
+
+Example: `2023042401_HU1285.stl`
+
+#### Processing Pipeline
+
+```
+DICOM Load → Binary Threshold → Morphological Opening → 
+CC Filtering → Anti-Alias → Marching Cubes → Mesh Cleanup → STL Export
+```
+
+---
+
+### CT-STL Registration
+
+**Script**: `main.py`
+
+Performs rigid registration between CT-derived point clouds and intraoral scan STL meshes.
+
+#### Arguments
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--case` | `str` | *required* | Case identifier (subfolder name) |
+| `--landmarks` | `str` | *required* | Path to landmarks JSON file |
+| `--hu-threshold` | `int` | `1200` | CT segmentation threshold |
+| `--interactive` | `flag` | `False` | Enable interactive landmark picker |
+| `--visualize` | `flag` | `False` | Display before/after visualization |
+| `--no-icp` | `flag` | `False` | Skip ICP refinement (landmarks only) |
+| `--output-dir` | `str` | `processed` | Output directory |
+
+#### Registration Stages
+
+| Stage | Max Distance | Iterations | Purpose |
+|-------|--------------|------------|---------|
+| 1 - Expansion | 5.0 mm | 200 | Coarse alignment |
+| 2 - Transitional | 1.5 mm | 100 | Intermediate refinement |
+| 3 - Precision | 0.8 mm | 100 | Fine registration |
+
+#### Quality Metrics
+
+| Classification | RMSE Threshold | Inlier Ratio |
+|----------------|----------------|--------------|
+| **Reliable** ✓ | < 1.0 mm | > 60% |
+| **Acceptable** | < 1.5 mm | > 45% |
+| **Failed** ✗ | ≥ 1.5 mm | ≤ 45% |
+
+---
+
+### Point Cloud Viewer
+
+**Script**: `viewer.py`
+
+Interactive visualization tool for CT and STL point clouds with optional STL export.
+
+#### Arguments
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--dicom-dir` | `str` | - | Path to DICOM directory |
+| `--stl-path` | `str` | - | Path to STL file |
+| `--mode` | `str` | `ct` | View mode: `ct`, `stl`, `both` |
+| `--hu-threshold` | `str\|int` | `1200` | Threshold (`auto` or integer) |
+| `--ct-voxel-size` | `float` | `0.4` | Point cloud sampling voxel size (mm) |
+| `--output-stl` | `str` | - | Export path (use `true` for auto-naming) |
+| `--no-smooth` | `flag` | `False` | Disable anti-aliasing |
+
+---
+
+## Technical Specifications
+
+### Adaptive HU Threshold Algorithm
+
+```
+1. Extract ROI: 300 < HU < 2500 (bone/teeth range)
+2. Apply Otsu thresholding on filtered data
+3. Hybrid logic: 
+   - If Otsu < 800: threshold = 0.4*Otsu + 0.6*P95
+   - Else: threshold = Otsu
+4. Spacing correction: -200 × (voxel_eff - 0.3)
+5. Metal artifact: If P99 > 3000 → +150 HU
+6. User offset: -450 HU (configurable)
+7. Clamp to [500, 3000] HU
+```
+
+### Surface Extraction Pipeline
+
+```
+Binary Threshold (HU)
+        ↓
+Morphological Opening (0.5mm radius)
+        ↓
+Connected Component Filter (min 15 mm³)
+        ↓
+Anti-Alias Smoothing (RMS = 0.08 × voxel_eff)
+        ↓
+Marching Cubes (level = 0.0)
+        ↓
+Mesh Cleanup:
+  - Remove duplicated vertices
+  - Remove degenerate triangles
+  - Cluster filtering (< 100 triangles)
+```
+
+### Coordinate System
+
+| Source | System | Convention |
+|--------|--------|------------|
+| DICOM/SimpleITK | LPS | Left-Posterior-Superior |
+| STL (typical) | RAS | Right-Anterior-Superior |
+
+**Note**: This pipeline preserves native DICOM LPS coordinates.
+
+---
+
+## API Reference
+
+### Core Functions
+
+```python
+# dicom_batch_to_ctl.py
+calculate_adaptive_threshold(image: sitk.Image, logger) -> int
+extract_surface_from_ct(image, hu_threshold, smooth, logger) -> o3d.TriangleMesh
+convert_series_to_stl(series_path, dicom_names, output_dir, hu_threshold, smooth, logger) -> bool
+batch_convert(input_dir, output_dir, hu_threshold, smooth, logger) -> Dict[str, int]
+
+# main.py
+compute_rigid_transform_svd(source_pts, target_pts) -> np.ndarray
+refine_with_icp(source, target, initial_transform, skip_stage1) -> Tuple[np.ndarray, RegistrationResult]
+```
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| `No Series were found` | Empty subdirectory | Normal warning, can be ignored |
+| Empty mesh output | Threshold too high | Lower `--hu-threshold` value |
+| Memory error | Large volume | Increase system RAM or reduce batch size |
+| KeyboardInterrupt | User abort | Normal termination signal |
+
+### Metal Artifact Cases
+
+For severe metal artifacts (dental implants, amalgam fillings):
+
+```bash
+# Use higher threshold manually
+python viewer.py --dicom-dir "./case" --hu-threshold 1800
+
+# Or adjust offset in code
+final_threshold = final_threshold - 200  # More conservative
+```
+
+---
+
+## Changelog
+
+### v1.2.0 (2025-12-29)
+
+**Added**
+- Metal artifact reduction with morphological opening
+- Mesh cluster filtering for noise removal
+- Memory management with `gc.collect()`
+- Smart output filename generation
+
+**Changed**
+- Increased threshold upper limit: 1800 → 3000 HU
+- Metal artifact offset: -80 → +150 HU
+- Morphology operation: Closing → Opening
 
 ### v1.1.0
-- ✅ Added `viewer.py` with physics-aware processing (mm³ filters, mm-morphology).
-- ✅ New Adaptive HU Thresholding (Percentile + Otsu + Metal Detection).
-- ✅ Three-Stage ICP (5.0mm → 1.5mm → 0.8mm).
-- ✅ Identity Transform Check for automated "Skip Picking" workflow.
+
+- Three-stage ICP refinement
+- Adaptive HU thresholding
+- Physics-aware morphological operations
 
 ### v1.0.0
-- ✅ Initial SVD/ICP Registration Pipeline.
+
+- Initial release
+
+---
+
+## Directory Structure
+
+```
+dental-ct-stl-registration/
+├── main.py                     # Registration pipeline
+├── viewer.py                   # Visualization tool
+├── dicom_batch_to_ctl.py       # Batch converter
+├── landmark_picker.py          # Standalone picker
+├── requirements.txt
+├── src/
+│   ├── dicom_loader.py
+│   ├── stl_loader.py
+│   ├── registration.py
+│   ├── visualizer.py
+│   └── utils.py
+├── data/                       # Input data
+├── landmarks/                  # Landmark JSON files
+├── processed/                  # Registration output
+└── CT_CTL/                     # Batch conversion output
+```
+
 - ✅ Interactive Landmark Picking tool.
+
