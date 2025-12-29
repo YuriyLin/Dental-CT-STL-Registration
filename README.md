@@ -1,338 +1,269 @@
 # Dental CT-STL Registration Pipeline
 
-A **stability-first, clinically-viable** registration system for aligning intraoral STL scans to CT coordinate systems for dental implant and surgical planning.
-
-## Features
-
-✅ **Landmark-based SVD registration** - Deterministic, interpretable alignment  
-✅ **Interactive landmark picking** - Built-in point selection tool (no external software needed)  
-✅ **Two-stage ICP refinement** - 2.0mm → 1.0mm progressive tightening  
-✅ **Automatic reflection detection** - Explicit det(R) check prevents left-right flips  
-✅ **Quality metrics** - RMSE, inlier ratio, clinical reliability classification  
-✅ **Configurable HU threshold** - Adapt to different CT scanner calibrations  
-✅ **Complete visualization** - Before/after comparison with high-contrast colors    
+A **stability-first, clinical-grade** registration system for aligning intraoral STL scans to CT coordinate systems for dental implant and surgical planning. Optimized for complex cases including heavy metal artifacts and varying scan resolutions.
 
 ---
 
-## Installation
+## 1. 系統概述 (System Overview)
 
-### Prerequisites
+### 🎯 Purpose
+本系統專為 **牙科植牙/手術規劃** 設計，解決從口內掃描儀 (IOS) 獲取的 STL 模型與 CT 影像坐標對齊的問題。透過自動化的 DICOM 處理、智慧型閾值計算、以及多階段配準演算法，實現高精度的空間定位。
 
-- Python 3.8 or higher
-- Windows/Linux/macOS
-- CT DICOM files + intraoral STL scan
+### 🏥 Clinical Applications
+| 應用場景 | 說明 |
+|----------|------|
+| **植牙導引板製作** | 將 STL 牙冠模型精確對齊至 CT 骨骼結構 |
+| **正顎手術規劃** | 融合術前 CT 與牙列數位模型 |
+| **齒顎矯正分析** | 結合齒槽骨與牙冠資訊進行 3D 診斷 |
+| **金屬假牙患者處理** | 專用金屬偽影抑制機制 |
 
-### Setup
-
-```bash
-# Clone or navigate to project directory
-cd c:\Dental-CT-STL-Registration
-
-# Create virtual environment (recommended)
-python -m venv venv
-venv\Scripts\activate  # Windows
-# source venv/bin/activate  # Linux/macOS
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-**Dependencies:**
-- `open3d>=0.17.0` - Point cloud processing & visualization (Note: Use Python 3.12 for best compatibility)
-- `SimpleITK>=2.3.0` - DICOM reading & marching cubes
-- `numpy>=1.24.0` - Numerical operations
-- `scipy>=1.11.0` - SVD optimization
-- `trimesh>=4.0.0` - Mesh utilities
-- `scikit-image>=0.21.0` - Image processing
-
-> **⚠️ Python Version Note:** Use Python 3.12 for best compatibility. Python 3.13 is not yet supported by open3d.
+### ✨ Key Innovations
+- **物理感知處理 (Physics-Aware Processing)**: 所有形態學運算與雜訊過濾均以 mm/mm³ 為單位，而非像素，確保跨解析度一致性。
+- **自適應金屬偽影補償 (Metal Artifact Compensation)**: 當偵測到 P99 > 3000 HU 時，自動提高閾值 +150 HU 以隔離緻密結構。
+- **三階段 ICP 精修 (Three-Stage ICP)**: 5.0mm → 1.5mm → 0.8mm 漸進式收斂，達成亞毫米級精度。
 
 ---
 
-## Usage
+## 2. 核心處理流程 (Pipeline Flow)
 
-### Quick Start (Interactive Mode)
+系統包含三個主要工具，可獨立或串聯使用：
 
-**One-command workflow with built-in landmark picking:**
-
-```bash
-python main.py --case 2023041102 \
-    --landmarks landmarks/2023041102.json \
-    --interactive \
-    --visualize
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         DENTAL CT-STL PIPELINE                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐   │
+│   │  DICOM Series   │────▶│   viewer.py     │────▶│   CT Surface    │   │
+│   │  (Raw CT Data)  │     │ (Preview/Export)│     │   (.stl)        │   │
+│   └─────────────────┘     └─────────────────┘     └─────────────────┘   │
+│                                  │                         │            │
+│                                  ▼                         ▼            │
+│   ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐   │
+│   │   STL Scan      │────▶│    main.py      │────▶│ Transformation  │   │
+│   │ (Intraoral)     │     │ (Registration)  │     │   Matrix        │   │
+│   └─────────────────┘     └─────────────────┘     └─────────────────┘   │
+│                                                                         │
+│   ┌─────────────────────────────────────────────────────────────────┐   │
+│   │              dicom_batch_to_ctl.py (Batch Processing)           │   │
+│   │  Recursive scan → CT modality filter → Auto threshold → STL    │   │
+│   └─────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-This will:
-1. Load CT and STL data
-2. 🆕 **Launch interactive landmark picker** (if landmarks file doesn't exist)
-3. Compute SVD registration
-4. Refine with two-stage ICP
-5. Show before/after visualization
+### 2.1 Registration Pipeline (`main.py`)
 
-### Standard Usage (Pre-existing Landmarks)
-
-```bash
-python main.py --case 2023041102 --landmarks landmarks/2023041102.json --visualize
+```
+[Input]                    [Processing]                       [Output]
+   │                            │                                │
+   ▼                            ▼                                ▼
+DICOM + STL ──▶ Identity Check (Inlier Ratio > 0.85?) ──▶ Skip to ICP
+                      │ No
+                      ▼
+              Landmark Picking (Interactive)
+                      │
+                      ▼
+              SVD Initial Alignment (3+ points)
+                      │
+                      ▼
+              ┌───────────────────────────┐
+              │   Three-Stage ICP         │
+              │   ├─ Stage 1: 5.0mm/200i  │  (Expansion Adsorption)
+              │   ├─ Stage 2: 1.5mm/100i  │  (Transitional Refinement)
+              │   └─ Stage 3: 0.8mm/100i  │  (Precision Locking)
+              └───────────────────────────┘
+                      │
+                      ▼
+              Quality Report + Transform Matrix
 ```
 
-### Command-Line Arguments
+### 2.2 CT Surface Extraction (`viewer.py` / `dicom_batch_to_ctl.py`)
 
-| Argument | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `--case` | ✓ | - | Case name (subdirectory in `data/CASE/cases/`) |
-| `--landmarks` | ✓ | - | Path to landmarks JSON file |
-| `--interactive` | ✗ | False | 🆕 Launch landmark picker if file doesn't exist |
-| `--hu-threshold` | ✗ | 1200 | HU threshold for tooth extraction |
-| `--output-dir` | ✗ | `processed` | Output directory for results |
-| `--visualize` | ✗ | False | Show visualization windows |
-| `--no-icp` | ✗ | False | Skip ICP refinement (landmark-only) |
+```
+[DICOM Input]
+      │
+      ▼
+┌─────────────────────────────────────────┐
+│  1. Adaptive HU Threshold Calculation   │
+│     • Otsu on bone range [300-2500]     │
+│     • Spacing Correction                │
+│     • Metal Artifact Detection (+150)   │
+│     • User Offset (+200)                │
+└─────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────┐
+│  2. Binary Segmentation                 │
+│     • Threshold: [calculated] ~ 3000 HU │
+└─────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────┐
+│  3. Morphological Cleanup               │
+│     • Opening (0.5mm radius)            │
+│     • Severs thin artifact connections  │
+└─────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────┐
+│  4. Connected Component Filtering       │
+│     • Remove fragments < 15 mm³         │
+└─────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────┐
+│  5. Anti-Alias Smoothing (Optional)     │
+│     • RMS linked to voxel spacing       │
+│     • Forced if spacing > 0.5mm         │
+└─────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────┐
+│  6. Marching Cubes Surface Extraction   │
+└─────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────┐
+│  7. Mesh Post-Processing                │
+│     • Remove duplicated vertices        │
+│     • Remove degenerate triangles       │
+│     • Cluster filter (< 100 triangles)  │
+└─────────────────────────────────────────┘
+      │
+      ▼
+[STL Output]
+```
 
-### Expected Data Structure
+---
+
+## 3. 模組架構設計 (Module Architecture)
+
+### 3.1 檔案結構 (File Structure)
 
 ```
 c:\Dental-CT-STL-Registration\
-├── data/CASE/cases/
-│   └── [case_name]/
-│       ├── DICOM/           # CT DICOM files (*.dcm)
-│       └── mandible/        # STL file (*.stl)
-├── landmarks/
-│   └── [case_name].json     # Landmark coordinates
-└── processed/
-    └── [case_name]/         # Outputs (created automatically)
+│
+├── main.py                      # 主配準流程入口
+├── viewer.py                    # 互動式 CT/STL 檢視器
+├── dicom_batch_to_ctl.py        # 批量 DICOM → STL 轉換
+├── landmark_picker.py           # 獨立選點工具 (legacy)
+│
+├── src/                         # 核心模組
+│   ├── dicom_loader.py          # DICOM 載入與表面提取
+│   ├── stl_loader.py            # STL 載入與點雲處理
+│   ├── registration.py          # SVD 對齊 + ICP 精修
+│   ├── visualizer.py            # 視覺化輔助函式
+│   └── utils.py                 # 品質評估與 I/O 工具
+│
+├── data/                        # 原始資料
+│   └── CASE/cases/[case_name]/
+│       ├── DICOM/               # CT 切片
+│       └── mandible/            # 口掃 STL
+│
+├── landmarks/                   # 選點結果 (JSON)
+├── processed/                   # 配準輸出 (矩陣 + PLY)
+└── CT_CTL/                      # 批次轉換 STL 輸出
 ```
 
----
+### 3.2 模組職責 (Module Responsibilities)
 
-## Landmark Selection
+| 模組 | 職責 | 核心函式 |
+|------|------|----------|
+| **`main.py`** | 配準主流程控制 | `InteractiveLandmarkPicker`, `main()` |
+| **`viewer.py`** | 互動檢視 + 單一轉換 | `calculate_adaptive_threshold()`, `extract_surface_from_ct()` |
+| **`dicom_batch_to_ctl.py`** | 批量轉換 + 錯誤處理 | `find_dicom_series()`, `batch_convert()` |
+| **`src/dicom_loader.py`** | DICOM I/O | `load_dicom_series()`, `extract_teeth_surface()` |
+| **`src/stl_loader.py`** | STL I/O + 點雲預處理 | `load_stl()`, `prepare_pointcloud_for_icp()` |
+| **`src/registration.py`** | 配準演算法 | `compute_rigid_transform_svd()`, `refine_with_icp()` |
+| **`src/utils.py`** | 品質指標計算 | `compute_rmse()`, `compute_inlier_ratio()` |
 
-### Method 1: Interactive Landmark Picking (Recommended)
-
-**Built-in tool - no external software needed!**
-
-```bash
-python main.py --case 2023041102 \
-    --landmarks landmarks/2023041102.json \
-    --interactive \
-    --visualize
-```
-
-**How to pick landmarks:**
-
-1. **CT Window (Red)** opens first:
-   - Rotate: Left-click drag
-   - Zoom: Mouse scroll
-   - Pick point: **SHIFT + Left-click** on anatomical landmark
-   - Finish: Press **Q**
-
-2. **STL Window (Green)** opens second:
-   - Pick same number of **corresponding** points
-   - **Same order** as CT!
-   - Press **Q** when done
-
-3. Pipeline automatically continues with registration
-
-### Method 2: Using External Tools
-
-> **💡 可使用 3D Slicer 或 MeshLab 標記後匯出 JSON**  
-> Advanced users can use familiar 3D visualization tools for landmark selection.
-
-### Landmark Guidelines
-
-**Requirements:**
-- ✅ **Minimum 3 pairs** (4-5 pairs recommended)
-- ✅ **Hard tissue only** (enamel surfaces, NOT gingiva)
-- ✅ **Distributed** across dental arch (not clustered)
-- ✅ **Clearly identifiable** in both CT and STL
-
-**Recommended Anatomical Points:**
-
-| Position | Anatomical Feature | FDI Notation | Priority |
-|----------|-------------------|--------------|----------|
-| Anterior | Incisal edge of central incisor | 11 or 21 | High |
-| Left | Mesiobuccal cusp of first molar | 26 or 36 | High |
-| Right | Mesiobuccal cusp of first molar | 16 or 46 | High |
-| Optional | Distobuccal cusp of second molar | 17/27 or 47/37 | Medium |
-
-### Landmark JSON Format
-
-```json
-{
-  "ct_landmarks": [
-    [x1, y1, z1],
-    [x2, y2, z2],
-    [x3, y3, z3]
-  ],
-  "stl_landmarks": [
-    [x1, y1, z1],
-    [x2, y2, z2],
-    [x3, y3, z3]
-  ]
-}
-```
-
-**Units:** All coordinates in **millimeters (mm)**
-
----
-
-## Output Files
-
-After successful registration, the pipeline generates:
+### 3.3 資料流 (Data Flow)
 
 ```
-processed/[case_name]/
-├── transformation_matrix.txt      # Human-readable 4x4 matrix
-├── transformation_matrix.json     # Programmatic format
-├── aligned_stl.ply               # Aligned STL point cloud
-├── original_stl.ply              # Original STL point cloud
-└── ct_teeth.ply                  # Extracted CT tooth surface
+                        ┌──────────────────────────────────────┐
+                        │           USER INTERFACE             │
+                        │  (CLI: main.py / viewer.py / batch)  │
+                        └──────────────────┬───────────────────┘
+                                           │
+              ┌────────────────────────────┼────────────────────────────┐
+              │                            │                            │
+              ▼                            ▼                            ▼
+    ┌─────────────────┐         ┌─────────────────┐         ┌─────────────────┐
+    │  dicom_loader   │         │   stl_loader    │         │  registration   │
+    │  ─────────────  │         │  ─────────────  │         │  ─────────────  │
+    │  DICOM → Mesh   │         │  STL → PointCld │         │  SVD + ICP      │
+    └────────┬────────┘         └────────┬────────┘         └────────┬────────┘
+             │                           │                           │
+             └───────────────────────────┴───────────────────────────┘
+                                         │
+                                         ▼
+                              ┌─────────────────────┐
+                              │       utils         │
+                              │  ─────────────────  │
+                              │  RMSE, I/O, Report  │
+                              └─────────────────────┘
 ```
 
-### Quality Classification
+### 3.4 關鍵演算法 (Key Algorithms)
 
-| Classification | RMSE | Inlier Ratio | Action |
-|----------------|------|--------------|--------|
-| **Highly Reliable ✓** | < 0.8 mm | > 70% | Ready for clinical use |
-| **Acceptable** | < 1.5 mm | > 50% | Visual inspection recommended |
-| **Failed ✗** | ≥ 1.5 mm | ≤ 50% | Re-select landmarks |
-
----
-
-## Troubleshooting
-
-### Common Issues
-
-#### 1. **Landmark count < 3**
-**Error:** `ValueError: At least 3 landmark pairs required`  
-**Solution:** Add more landmarks in JSON file (minimum 3 pairs)
-
-#### 2. **Scale mismatch**
-**Symptom:** RMSE > 10mm, grossly misaligned  
-**Solution:** Verify both CT and STL use millimeters. Check DICOM spacing.
-
-#### 3. **180° rotation / left-right flip**
-**Symptom:** Teeth appear mirrored despite low RMSE  
-**Solution:** The pipeline automatically detects and corrects reflections via det(R) check. If problem persists, verify landmark order matches between CT and STL.
-
-#### 4. **Poor tooth extraction**
-**Symptom:** Too much/little extracted from CT  
-**Solution:** Adjust `--hu-threshold`:
-- Too much soft tissue: Increase (try 1300-1500)
-- Missing teeth: Decrease (try 1000-1100)
-- Different CT scanners may require calibration
-
-#### 5. **ICP divergence**
-**Symptom:** Final RMSE worse than landmark RMSE  
-**Solution:** 
-- Check landmark alignment RMSE (should be < 3mm)
-- Use `--no-icp` flag to verify landmark-only registration
-- Re-select landmarks if initial alignment is poor
-
-#### 6. **Visualization doesn't open**
-**Symptom:** `--visualize` flag has no effect  
-**Solution:** Check if running in headless environment. Use remote desktop or save screenshots instead.
-
----
-
-## Pipeline Workflow
-
-```mermaid
-flowchart LR
-    A[CT DICOM] -->|HU Threshold| B[Tooth Surface]
-    C[STL Scan] -->|Sampling| D[Point Cloud]
-    E[Landmarks] -->|SVD| F[Initial Transform]
-    
-    B --> G[CT PointCloud]
-    D --> F
-    F -->|Apply| H[Pre-aligned STL]
-    
-    H -->|ICP Stage 1<br/>2.0mm| I[Coarse]
-    G --> I
-    I -->|ICP Stage 2<br/>1.0mm| J[Final Aligned]
-    
-    J --> K[Quality Metrics]
-    K --> L[Report & Files]
-```
-
----
-
-## Advanced Usage
-
-### Programmatic Access
-
+#### Adaptive HU Threshold
 ```python
-from src import run_registration_pipeline
-
-results = run_registration_pipeline(
-    dicom_dir='data/CASE/cases/2023041102/DICOM',
-    stl_path='data/CASE/cases/2023041102/mandible/GUM.stl',
-    landmarks_path='landmarks/2023041102.json',
-    output_dir='processed/2023041102',
-    hu_threshold=1200,
-    visualize=True
-)
-
-print(f"RMSE: {results['rmse']:.3f} mm")
-print(f"Quality: {results['quality']}")
+threshold = Otsu(bone_range[300:2500])
+threshold += spacing_correction(-200 * (voxel_eff - 0.3))
+threshold += metal_offset(+150 if P99 > 3000)
+threshold += user_offset(+200)
+threshold = clip(threshold, 500, 3000)
 ```
 
-### Integration with Other Tools
-
-The output `transformation_matrix.json` can be loaded in:
-- **3D Slicer:** Use Transform module
-- **MITK:** Load as ITK transform
-- **Custom software:** Parse JSON rotation + translation
+#### Three-Stage ICP
+| Stage | Max Distance | Iterations | Purpose |
+|-------|--------------|------------|---------|
+| 1 | 5.0 mm | 200 | 擴張吸附 - 捕捉遠距對應點 |
+| 2 | 1.5 mm | 100 | 過渡微調 - 穩定對齊姿態 |
+| 3 | 0.8 mm | 100 | 精密鎖定 - 最終高精度收斂 |
 
 ---
 
-## Technical Details
+## 💻 Quick Start
 
-### Design Principles
-
-| Priority | Principle | Implementation |
-|----------|-----------|----------------|
-| 1 | Stability | Landmark-first, constrained ICP |
-| 2 | Explainability | Clear stages, detailed logging |
-| 3 | Accuracy | Two-stage refinement, quality metrics |
-
-### Key Algorithms
-
-**Procrustes/SVD Registration:**
-```
-1. Center both landmark sets
-2. Compute cross-covariance H = source.T @ target
-3. SVD: U, S, Vt = svd(H)
-4. Rotation: R = Vt.T @ U.T
-5. Check det(R): if -1, flip last column of Vt
-6. Translation: t = target_centroid - R @ source_centroid
+### Installation
+```bash
+cd c:\Dental-CT-STL-Registration
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-**Two-Stage ICP:**
-- Stage 1: `max_dist=2.0mm`, up to 30 iterations
-- Stage 2: `max_dist=1.0mm`, up to 50 iterations
-- Early stopping if RMSE improvement < 0.01mm
+### Basic Usage
+```bash
+# 1. 單一案例互動檢視
+python viewer.py --dicom-dir "data/CASE/cases/2023041801/DICOM" --hu-threshold auto
+
+# 2. 批量轉換
+python dicom_batch_to_ctl.py --input-dir "data/CT_problem" --output-dir "CT_CTL" --hu-threshold auto
+
+# 3. 完整配準流程
+python main.py --case 2023041801 --landmarks landmarks/2023041801.json --interactive --visualize
+```
 
 ---
 
-## Future Enhancements
+## 📝 Changelog
 
-*(Not currently implemented)*
+### v1.2.0 (Current)
+- ✅ **Metal Artifact Reduction**: Changed threshold offset from -80 to +150, switched to Opening morphology.
+- ✅ **Mesh Post-Processing**: Added cluster filtering to remove small disconnected fragments.
+- ✅ **Batch Converter**: New `dicom_batch_to_ctl.py` with recursive scanning and memory management.
+- ✅ **Threshold Limit Fix**: Upper clip increased to 3000 HU for proper artifact handling.
+- ✅ **Empty Mesh Safety Check**: Prevents saving invalid STL files.
 
--  FPFH feature matching for automatic pre-alignment fallback
--  AI-based automatic landmark detection
--  Multi-resolution ICP with point-to-plane metric
--  Integration API for surgical navigation systems
--  Batch processing for multiple cases
+### v1.1.0
+- ✅ Added `viewer.py` with physics-aware processing (mm³ filters, mm-morphology).
+- ✅ New Adaptive HU Thresholding (Percentile + Otsu + Metal Detection).
+- ✅ Three-Stage ICP (5.0mm → 1.5mm → 0.8mm).
+- ✅ Identity Transform Check for automated "Skip Picking" workflow.
 
----
-
-## Changelog
-
-### v1.0.0 (2025-12-26)
-- ✅ Initial release
-- ✅ Landmark-based SVD registration
-- ✅ **Interactive landmark picking tool** (integrated into main pipeline)
-- ✅ Two-stage ICP refinement
-- ✅ Reflection detection and correction
-- ✅ Configurable HU threshold
-- ✅ Quality metrics and reporting
-- ✅ Complete CLI interface
+### v1.0.0
+- ✅ Initial SVD/ICP Registration Pipeline.
+- ✅ Interactive Landmark Picking tool.
